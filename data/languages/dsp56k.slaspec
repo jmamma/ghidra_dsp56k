@@ -2738,9 +2738,8 @@ inst:"illegal" is inst_23_0=0b000000000000000000000101 {
   proc_illegal();
 }
 
-
-insert_src: SSS is SSS & inst_3_1>=2 { export SSS; }
-insert_src: "#"^opt_extension is inst_3_1=0; opt_extension { export opt_extension; }
+insert_src: SSS is SSS & inst_3_1>=2 { local tmp:3 = zext(SSS); export tmp; }
+insert_src: "#"^opt_extension is inst_3_1=0; opt_extension { local tmp:3 = opt_extension; export tmp; }
 
 inst:"inc" D is inst_23_1=0b00000000000000000000100 & D {
 # TODO flags
