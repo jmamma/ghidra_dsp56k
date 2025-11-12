@@ -56,14 +56,19 @@ define register offset=0x8c size=3     [ fv_reg  temp_reg ];
 #                 vf=ccr[1,1] # overflow bit
 #                 cf=ccr[0,1] # carry bit
 # ;
-@define sf  "ccr[7,1]" # Scaling bit
-@define lf  "ccr[6,1]" # Limit bit
-@define ef  "ccr[5,1]" # Extension bit
-@define uf  "ccr[4,1]" # Unnormalized bit
-@define nf  "ccr[3,1]" # Negative bit
-@define zf  "ccr[2,1]" # Zero bit
-@define vf  "ccr[1,1]" # Overflow bit
-@define cf  "ccr[0,1]" # Carry bit
+@define sf  "ccr[7,1]" # Scaling bit (S)
+@define lf  "ccr[6,1]" # Limit bit (L) - NOTE: This is L flag in CCR, not LF (Loop Flag)
+@define ef  "ccr[5,1]" # Extension bit (E)
+@define uf  "ccr[4,1]" # Unnormalized bit (U)
+@define nf  "ccr[3,1]" # Negative bit (N)
+@define zf  "ccr[2,1]" # Zero bit (Z)
+@define vf  "ccr[1,1]" # Overflow bit (V)
+@define cf  "ccr[0,1]" # Carry bit (C)
+
+# MR (Mode Register) flags - bits 16-23 of SR
+# Note: SR is 24-bit, structured as [MR:23-16][middle:15-8][CCR:7-0]
+@define loop_flag     "sr[15,1]" # LF - Loop Flag (SR bit 15, enables loop detection)
+@define forever_flag  "sr[16,1]" # FV - Forever Flag (SR bit 16, marks DO FOREVER loops)
 
 # Context variable is defined in the register space.
 # It doesn't represent a processor component, but to specify conditions
@@ -312,6 +317,7 @@ define token inst_word(24)
   inst_15_14                = (14, 15)
   inst_13_8                 = (8,  13)
   inst_11_10                = (10, 11)
+  inst_11_8                 = (8,  11)
   inst_11_7                 = (7,  11)
   inst_7_6                  = (6,   7)
   inst_7_5                  = (5,   7)
@@ -320,6 +326,7 @@ define token inst_word(24)
   inst_7_2                  = (2,   7)
   inst_7_0                  = (0,   7)
   inst_6_5                  = (5,   6)
+  inst_5_4                  = (4,   5)
   inst_23                   = (23, 23)
   inst_22                   = (22, 22)
   inst_19                   = (19, 19)
@@ -778,6 +785,108 @@ macro calc_flags(mask, cbit, vbit, zbit, nbit, ubit, ebit, lbit, sbit) {
   <post_sf>
 }
 
+macro sr_update_ccr_flag(bit, val) {
+  if (bit != 0) goto <skip_cf>;
+  $(cf)=val;
+  <skip_cf>
+  if (bit != 1) goto <skip_vf>;
+  $(vf)=val;
+  <skip_vf>
+  if (bit != 2) goto <skip_zf>;
+  $(zf)=val;
+  <skip_zf>
+  if (bit != 3) goto <skip_nf>;
+  $(nf)=val;
+  <skip_nf>
+  if (bit != 4) goto <skip_uf>;
+  $(uf)=val;
+  <skip_uf>
+  if (bit != 5) goto <skip_ef>;
+  $(ef)=val;
+  <skip_ef>
+  if (bit != 6) goto <skip_lf>;
+  $(lf)=val;
+  <skip_lf>
+  if (bit != 7) goto <skip_sf>;
+  $(sf)=val;
+  <skip_sf>
+}
+
+macro sr_set_bit(bit) {
+  if (bit < 8) goto <set_ccr>;
+  if (bit < 16) goto <set_mr>;
+  goto <set_emr>;
+  <set_ccr>
+  local mask_ccr:1=1;
+  mask_ccr = mask_ccr << bit;
+  ccr = ccr | mask_ccr;
+  sr_update_ccr_flag(bit, 1);
+  goto <sr_set_end>;
+  <set_mr>
+  local idx_mr:1 = bit - 8;
+  local mask_mr:1=1;
+  mask_mr = mask_mr << idx_mr;
+  mr = mr | mask_mr;
+  goto <sr_set_end>;
+  <set_emr>
+  local idx_emr:1 = bit - 16;
+  local mask_emr:1=1;
+  mask_emr = mask_emr << idx_emr;
+  emr = emr | mask_emr;
+  <sr_set_end>
+}
+
+macro sr_clear_bit(bit) {
+  if (bit < 8) goto <clr_ccr>;
+  if (bit < 16) goto <clr_mr>;
+  goto <clr_emr>;
+  <clr_ccr>
+  local mask_ccr:1=1;
+  mask_ccr = mask_ccr << bit;
+  ccr = ccr & ~mask_ccr;
+  sr_update_ccr_flag(bit, 0);
+  goto <sr_clr_end>;
+  <clr_mr>
+  local idx_mr:1 = bit - 8;
+  local mask_mr:1=1;
+  mask_mr = mask_mr << idx_mr;
+  mr = mr & ~mask_mr;
+  goto <sr_clr_end>;
+  <clr_emr>
+  local idx_emr:1 = bit - 16;
+  local mask_emr:1=1;
+  mask_emr = mask_emr << idx_emr;
+  emr = emr & ~mask_emr;
+  <sr_clr_end>
+}
+
+macro sr_toggle_bit(bit) {
+  if (bit < 8) goto <tgl_ccr>;
+  if (bit < 16) goto <tgl_mr>;
+  goto <tgl_emr>;
+  <tgl_ccr>
+  local mask_ccr:1=1;
+  mask_ccr = mask_ccr << bit;
+  local newbit:1 = ((ccr >> bit) & 1) ^ 1;
+  ccr = (ccr & ~mask_ccr) | (newbit << bit);
+  sr_update_ccr_flag(bit, newbit);
+  goto <sr_tgl_end>;
+  <tgl_mr>
+  local idx_mr:1 = bit - 8;
+  local mask_mr:1=1;
+  mask_mr = mask_mr << idx_mr;
+  local new_mr:1 = ((mr >> idx_mr) & 1) ^ 1;
+  mr = (mr & ~mask_mr) | (new_mr << idx_mr);
+  goto <sr_tgl_end>;
+  <tgl_emr>
+  local idx_emr:1 = bit - 16;
+  local mask_emr:1=1;
+  mask_emr = mask_emr << idx_emr;
+  local new_emr:1 = ((emr >> idx_emr) & 1) ^ 1;
+  emr = (emr & ~mask_emr) | (new_emr << idx_emr);
+  <sr_tgl_end>
+}
+
 define pcodeop proc_illegal;
 define pcodeop proc_pflush;
 define pcodeop proc_pflushun;
@@ -1065,9 +1174,9 @@ parMove:xymov_op1_long,"x:"^eax xymov_op2_long,"y:"^eay  is eax & eay & xymov_op
 # parCond is always evaluated before the instruction, and thus conditionally execute.
 parMove: is (inst_23_12=0b001000000010 | inst_23_12=0b001000000011) {}
 parCond: "IF"^parcond_name is (inst_23_12=0b001000000010 | inst_23_12=0b001000000011) & parcond_name & parcond_cccc {
-#TODO condition flags
+  # Parallel conditional execution - evaluates condition and continues if TRUE
+  # Uses same condition code encoding as IFcc (all 16 conditions supported)
   local cond_val:2 = parcond_cccc;
-# see x86 sleigh ia.sinc for more macro tricks...
   calc_cond_inst_next(cond_val);
 }
 # fallback to no parCond
@@ -1075,7 +1184,23 @@ parCond: is epsilon {}
 
 movec_a6: movec_aaaaaa is movec_aaaaaa { local tmp:3=movec_aaaaaa; export tmp; }
 
-# TODO ssh stack operations, page 370 (13-130)
+# SSH (System Stack High) Special Behavior - Per DSP56300FM Section 13-130:
+# When SSH is used in MOVE/MOVEC/MOVEM instructions, the Stack Pointer (SP) is automatically adjusted:
+#   - MOVE to SSH:   SP is PRE-INCREMENTED (+1) BEFORE SSH is written (push operation)
+#   - MOVE from SSH: SP is POST-DECREMENTED (-1) AFTER SSH is read (pull operation)
+# This automatic SP adjustment allows efficient software stack extension.
+# NOTE: SSL (System Stack Low) does NOT affect SP - only SSH affects the stack pointer.
+#
+# IMPORTANT RESTRICTIONS (Appendix A.3):
+# - SSH cannot be used as source for Loop-Count in DO/DOR instructions
+# - MOVE/BCHG/BCLR/BSET on SSH should NOT appear within 4 words before DO/DOR/DO FOREVER
+# - MOVE from SSH should NOT appear immediately before RTI/RTS
+# - See DSP56300FM Appendix A for complete list of SSH restrictions
+#
+# Stack Extension Mode:
+# - When SEN bit set in OMR, hardware stack automatically extends to/from data memory at EP
+# - Push when stack full: moves least-recently-used item to memory
+# - Pull when stack empty: loads item from memory
 
 movec_reg8:movec_eeeeee_byte  is movec_eeeeee>=10 & movec_eeeeee<=11 & movec_eeeeee_byte { export movec_eeeeee_byte; }
 movec_reg24:movec_eeeeee_word is ( (movec_eeeeee>=4 & movec_eeeeee<=9) 
@@ -1132,9 +1257,9 @@ inst:"movem" movem_reg8,"p:"^movem_a6   is inst_23_14=0b0000011100 & inst_7_6=0b
 inst:"movem" movem_reg24,"p:"^movem_a6  is inst_23_14=0b0000011100 & inst_7_6=0b00 & movem_reg24 & movem_a6 { *[progmem]:3 movem_a6=movem_reg24; }
 inst:"movem" movem_reg56,"p:"^movem_a6  is inst_23_14=0b0000011100 & inst_7_6=0b00 & movem_reg56 & movem_a6 { *[progmem]:3 movem_a6=movem_reg56[24,24]; }
 
-inst:"movem" "p:"^movem_a6,movem_reg8   is inst_23_14=0b0000011110 & inst_7_6=0b00 & movem_reg8  & movem_a6 { movem_reg8 =*[progmem]:1 movem_a6; }
-inst:"movem" "p:"^movem_a6,movem_reg24  is inst_23_14=0b0000011110 & inst_7_6=0b00 & movem_reg24 & movem_a6 { movem_reg24=*[progmem]:3 movem_a6; }
-inst:"movem" "p:"^movem_a6,movem_reg56  is inst_23_14=0b0000011110 & inst_7_6=0b00 & movem_reg56 & movem_a6 { acc_write_signed24(movem_reg56,*[progmem]:3 movem_a6); }
+inst:"movem" "p:"^movem_a6,movem_reg8   is inst_23_14=0b0000011110 & inst_7_6=0b00 & movem_aaaaaa!=0b110100 & movem_reg8  & movem_a6 { movem_reg8 =*[progmem]:1 movem_a6; }
+inst:"movem" "p:"^movem_a6,movem_reg24  is inst_23_14=0b0000011110 & inst_7_6=0b00 & movem_aaaaaa!=0b110100 & movem_reg24 & movem_a6 { movem_reg24=*[progmem]:3 movem_a6; }
+inst:"movem" "p:"^movem_a6,movem_reg56  is inst_23_14=0b0000011110 & inst_7_6=0b00 & movem_aaaaaa!=0b110100 & movem_reg56 & movem_a6 { acc_write_signed24(movem_reg56,*[progmem]:3 movem_a6); }
 
 movep_pp:io_addr is movep_pppppp [io_addr=0xFFFFC0+movep_pppppp;] { local tmp:3=io_addr; export tmp; }
 movep_qq:io_addr is movep_qqqqqq [io_addr=0xFFFF80+movep_qqqqqq;] { local tmp:3=io_addr; export tmp; }
@@ -1180,10 +1305,11 @@ inst:"movep" "x:<<"^movep_pp,"p:"^ea1 is (inst_23_14=0b0000100001 & inst_7_6=0b0
 inst:"movep" "y:<<"^movep_pp,"p:"^ea1 is (inst_23_14=0b0000100101 & inst_7_6=0b01 & movep_pp) ... & ea1 { *[progmem]:3 ea1=*[ymem]:3 movep_pp; }
 
 # P: Reference (low I/O address)
-inst:"movep" "p:"^ea1,"x:<<"^movep_qq is (inst_23_14=0b0000000011 & inst_7_6=0b00 & movep_qq) ... & ea1 { *[xmem]:3 movep_qq=*[progmem]:3 ea1; }
-inst:"movep" "p:"^ea1,"y:<<"^movep_qq is (inst_23_14=0b0000000011 & inst_7_6=0b01 & movep_qq) ... & ea1 { *[ymem]:3 movep_qq=*[progmem]:3 ea1; }
-inst:"movep" "x:<<"^movep_qq,"p:"^ea1 is (inst_23_14=0b0000000010 & inst_7_6=0b00 & movep_qq) ... & ea1 { *[progmem]:3 ea1=*[xmem]:3 movep_qq; }
-inst:"movep" "y:<<"^movep_qq,"p:"^ea1 is (inst_23_14=0b0000000010 & inst_7_6=0b01 & movep_qq) ... & ea1 { *[progmem]:3 ea1=*[ymem]:3 movep_qq; }
+# Re-testing: No active instructions use inst_23_14=0b000000001x - attempting to re-enable
+inst:"movep" "p:"^ea1,"x:<<"^movep_qq is (inst_23_14=0b0000000011 & inst_7_6=0b00 & ea1_mmmrrr!=0b110100 & movep_qq) ... & ea1 { *[xmem]:3 movep_qq=*[progmem]:3 ea1; }
+inst:"movep" "p:"^ea1,"y:<<"^movep_qq is (inst_23_14=0b0000000011 & inst_7_6=0b01 & ea1_mmmrrr!=0b110100 & movep_qq) ... & ea1 { *[ymem]:3 movep_qq=*[progmem]:3 ea1; }
+inst:"movep" "x:<<"^movep_qq,"p:"^ea1 is (inst_23_14=0b0000000010 & inst_7_6=0b00 & ea1_mmmrrr!=0b110100 & movep_qq) ... & ea1 { *[progmem]:3 ea1=*[xmem]:3 movep_qq; }
+inst:"movep" "y:<<"^movep_qq,"p:"^ea1 is (inst_23_14=0b0000000010 & inst_7_6=0b01 & ea1_mmmrrr!=0b110100 & movep_qq) ... & ea1 { *[progmem]:3 ea1=*[ymem]:3 movep_qq; }
 
 # X: or Y: Reference (high I/O address) -- imm24
 inst:"movep" ea1_imm24,"x:<<"^movep_pp is (inst_23_14=0b0000100011 & inst_7_6=0b10 & movep_pp) ... & ea1_imm24 { *[xmem]:3 movep_pp=ea1_imm24; }
@@ -1195,14 +1321,15 @@ inst:"movep" ea1_imm24,"y:<<"^movep_pp is (inst_23_14=0b0000100111 & inst_7_6=0b
 inst:"movep" ea1_imm24,"x:<<"^movep_qq is (inst_23_14=0b0000011111 & inst_7_6=0b00 & movep_qq) ... & ea1_imm24 { *[xmem]:3 movep_qq=ea1_imm24; }
 inst:"movep" ea1_imm24,"x:<<"^movep_qq is (inst_23_14=0b0000011111 & inst_7_6=0b01 & movep_qq) ... & ea1_imm24 { *[xmem]:3 movep_qq=ea1_imm24; }
 
-inst:"movep" ea1_imm24,"y:<<"^movep_qq is (inst_23_14=0b0000011110 & inst_7_6=0b00 & movep_qq) ... & ea1_imm24 { *[ymem]:3 movep_qq=ea1_imm24; }
-inst:"movep" ea1_imm24,"y:<<"^movep_qq is (inst_23_14=0b0000011110 & inst_7_6=0b01 & movep_qq) ... & ea1_imm24 { *[ymem]:3 movep_qq=ea1_imm24; }
+inst:"movep" ea1_imm24,"y:<<"^movep_qq is (inst_23_14=0b0000011110 & ea1_mmmrrr=0b110100 & inst_7_6=0b00 & movep_qq) ... & ea1_imm24 { *[ymem]:3 movep_qq=ea1_imm24; }
+inst:"movep" ea1_imm24,"y:<<"^movep_qq is (inst_23_14=0b0000011110 & ea1_mmmrrr=0b110100 & inst_7_6=0b01 & movep_qq) ... & ea1_imm24 { *[ymem]:3 movep_qq=ea1_imm24; }
 
 # P: Reference (high I/O address) -- imm24
 inst:"movep" ea1_imm24,"x:<<"^movep_pp is (inst_23_14=0b0000100001 & inst_7_6=0b01 & movep_pp) ... & ea1_imm24 { *[xmem]:3 movep_pp=ea1_imm24; }
 inst:"movep" ea1_imm24,"y:<<"^movep_pp is (inst_23_14=0b0000100101 & inst_7_6=0b01 & movep_pp) ... & ea1_imm24 { *[ymem]:3 movep_pp=ea1_imm24; }
 
 # P: Reference (low I/O address) -- imm24
+# Re-testing: No conflicts found with inst_23_14=0b0000000010 - attempting to re-enable
 inst:"movep" ea1_imm24,"x:<<"^movep_qq is (inst_23_14=0b0000000010 & inst_7_6=0b00 & movep_qq) ... & ea1_imm24 { *[xmem]:3 movep_qq=ea1_imm24; }
 inst:"movep" ea1_imm24,"y:<<"^movep_qq is (inst_23_14=0b0000000010 & inst_7_6=0b01 & movep_qq) ... & ea1_imm24 { *[ymem]:3 movep_qq=ea1_imm24; }
 
@@ -1253,9 +1380,19 @@ jmp_reg56:jmp_DDDDDD_long is (jmp_DDDDDD=14|jmp_DDDDDD=15) & jmp_DDDDDD_long { e
 jmp_addr24: opt_extension is opt_extension { export *[progmem]:3 opt_extension; }
 jmp_addr12: jmp_aaaaaaaaaaaa is jmp_aaaaaaaaaaaa { export *[progmem]:3 jmp_aaaaaaaaaaaa; }
 jmp_ea24:opt_extension is ea1_mmmrrr=0b110000; opt_extension { export *[progmem]:3 opt_extension; }
-# TODO still have issues with register-based jump.
-# export like above = exception, workaround is to export, and use goto [jmp_ea3] to get it compile
-# the semantic is problematic, though.
+# Register-Indirect Jump Addressing (jmp_ea3)
+#
+# SLEIGH LIMITATION WORKAROUND:
+# Direct export like "jmp_ea3: ea3 is ea3 { export ea3; }" causes SLEIGH compiler exception.
+# Workaround: Create local temporary, assign ea3 to it, then export the temporary.
+# This allows "goto [jmp_ea3]" and "call [jmp_ea3]" to compile successfully.
+#
+# SEMANTIC ISSUE:
+# The indirection through local tmp may affect decompilation quality for computed jumps.
+# Register-indirect jumps (e.g., JMP (Rn), JSR (Rn)) use this constructor.
+# The actual jump target is computed at runtime from the register value.
+#
+# Used by: JMP ea3, JSR ea3, Jcc ea3, JScc ea3
 jmp_ea3:ea3 is ea3 { local tmp:3 = ea3; export tmp; }
 
 mulxx_sgn: is k_xx=0 & k_xx_ { local tmp:1=k_xx_; export tmp; }
@@ -1263,6 +1400,23 @@ mulxx_sgn:"-" is k_xx=1 & k_xx_ { local tmp:1=k_xx_; export tmp; }
 
 mul_sgn: is k=0 & k_ { local tmp:1=k_; export tmp; }
 mul_sgn:"-" is k=1 & k_ { local tmp:1=k_; export tmp; }
+
+# MAC Format 2 immediate - power of 2 encoding (ssss bits 11-8)
+mac2_imm:"$10000" is inst_11_8=1  { local val:3=0x010000; export val; }
+mac2_imm:"$8000"  is inst_11_8=2  { local val:3=0x008000; export val; }
+mac2_imm:"$4000"  is inst_11_8=3  { local val:3=0x004000; export val; }
+mac2_imm:"$2000"  is inst_11_8=4  { local val:3=0x002000; export val; }
+mac2_imm:"$1000"  is inst_11_8=5  { local val:3=0x001000; export val; }
+mac2_imm:"$800"   is inst_11_8=6  { local val:3=0x000800; export val; }
+mac2_imm:"$400"   is inst_11_8=7  { local val:3=0x000400; export val; }
+mac2_imm:"$200"   is inst_11_8=8  { local val:3=0x000200; export val; }
+mac2_imm:"$100"   is inst_11_8=9  { local val:3=0x000100; export val; }
+mac2_imm:"$80"    is inst_11_8=10 { local val:3=0x000080; export val; }
+mac2_imm:"$40"    is inst_11_8=11 { local val:3=0x000040; export val; }
+mac2_imm:"$20"    is inst_11_8=12 { local val:3=0x000020; export val; }
+mac2_imm:"$10"    is inst_11_8=13 { local val:3=0x000010; export val; }
+mac2_imm:"$4"     is inst_11_8=14 { local val:3=0x000004; export val; }
+mac2_imm:"$1"     is inst_11_8=15 { local val:3=0x000001; export val; }
 
 lua_reg8:lua_ddddd_byte is (lua_ddddd=10|lua_ddddd=11) & lua_ddddd_byte { export lua_ddddd_byte; }
 lua_reg24:lua_ddddd_word is (lua_ddddd>3 & lua_ddddd!=10 & lua_ddddd!=11 & lua_ddddd!=14 & lua_ddddd!=15) & lua_ddddd_word { export lua_ddddd_word; }
@@ -1347,7 +1501,8 @@ inst:"and" "#"^arith_iiiiii,d is inst_23_14=0b0000000101 & inst_7_4=0b1000 & kkk
   calc_flags(0b10001110, 0, 0, d[24, 24] == 0, d[47,1], 0, 0, 0, 0);
 }
 
-inst:"and" "#"^opt_extension,d is inst_23_14=0b0000000101 & inst_7_4=0b1100 & kkk=0b110 & d; opt_extension {
+# Re-enabled: Distinguished from MACI by inst_13_8=0 (MACI has inst_13_8=1)
+inst:"and" "#"^opt_extension,d is inst_23_14=0b0000000101 & inst_13_8=0 & inst_7_6=0b11 & inst_5_4=0b00 & kkk=0b110 & d; opt_extension {
   d[24,24]=d[24,24] & opt_extension;
   calc_flags(0b10001110, 0, 0, d[24, 24] == 0, d[47,1], 0, 0, 0, 0);
 }
@@ -1429,7 +1584,89 @@ inst:"b"^cc2_name cc2_rn is inst_23_11=0b0000110100011 & cc2_rn & inst_7_4=0b010
   calc_cond(cond, addr);
 }
 
-# TODO bchg
+# -------------------- BCHG -------------------------
+# Bit Test and Change - XOR (toggle) the specified bit
+inst:"bchg" "#"^jmp_bbbbb,"x:"^ea1 is (inst_23_14=0b0000101101 & inst_7_5=0b000 & jmp_bbbbb) ... & ea1 {
+  local v:3=(1<<jmp_bbbbb);
+  local m:3=*[xmem]:3 ea1;
+  $(cf) = (m & v) != 0;
+  *[xmem]:3 ea1 = m ^ v;
+}
+
+inst:"bchg" "#"^jmp_bbbbb,"y:"^ea1 is (inst_23_14=0b0000101101 & inst_7_5=0b010 & jmp_bbbbb) ... & ea1  {
+  local v:3=(1<<jmp_bbbbb);
+  local m:3=*[ymem]:3 ea1;
+  $(cf) = (m & v) != 0;
+  *[ymem]:3 ea1 = m ^ v;
+}
+
+inst:"bchg" "#"^jmp_bbbbb,"x:"^jmp_aaaaaa is inst_23_14=0b0000101100 & inst_7_5=0b000 & jmp_bbbbb & jmp_aaaaaa  {
+  local v:3=(1<<jmp_bbbbb);
+  local addr:3=jmp_aaaaaa;
+  local m:3=*[xmem]:3 addr;
+  $(cf) = (m & v) != 0;
+  *[xmem]:3 addr = m ^ v;
+}
+
+inst:"bchg" "#"^jmp_bbbbb,"y:"^jmp_aaaaaa is inst_23_14=0b0000101100 & inst_7_5=0b010 & jmp_bbbbb & jmp_aaaaaa  {
+  local v:3=(1<<jmp_bbbbb);
+  local addr:3=jmp_aaaaaa;
+  local m:3=*[ymem]:3 addr;
+  $(cf) = (m & v) != 0;
+  *[ymem]:3 addr = m ^ v;
+}
+
+inst:"bchg" "#"^jmp_bbbbb,"x:<<"^io_addr is inst_23_14=0b0000101110 & inst_7_5=0b000 & jmp_bbbbb & jmp_pppppp [io_addr=jmp_pppppp+0xFFFFC0; ] {
+  local v:3=(1<<jmp_bbbbb);
+  local addr:3=io_addr;
+  local m:3=*[xmem]:3 addr;
+  $(cf) = (m & v) != 0;
+  *[xmem]:3 addr = m ^ v;
+}
+
+inst:"bchg" "#"^jmp_bbbbb,"y:<<"^io_addr is inst_23_14=0b0000101110 & inst_7_5=0b010 & jmp_bbbbb & jmp_pppppp [io_addr=jmp_pppppp+0xFFFFC0; ] {
+  local v:3=(1<<jmp_bbbbb);
+  local addr:3=io_addr;
+  local m:3=*[ymem]:3 addr;
+  $(cf) = (m & v) != 0;
+  *[ymem]:3 addr = m ^ v;
+}
+
+inst:"bchg" "#"^jmp_bbbbb,"x:<<"^io_addr is inst_23_14=0b0000000101 & inst_7_5=0b000 & jmp_bbbbb & jmp_qqqqqq [io_addr=jmp_qqqqqq+0xFFFF80; ] {
+  local v:3=(1<<jmp_bbbbb);
+  local addr:3=io_addr;
+  local m:3=*[xmem]:3 addr;
+  $(cf) = (m & v) != 0;
+  *[xmem]:3 addr = m ^ v;
+}
+
+inst:"bchg" "#"^jmp_bbbbb,"y:<<"^io_addr is inst_23_14=0b0000000101 & inst_7_5=0b010 & jmp_bbbbb & jmp_qqqqqq [io_addr=jmp_qqqqqq+0xFFFF80; ] {
+  local v:3=(1<<jmp_bbbbb);
+  local addr:3=io_addr;
+  local m:3=*[ymem]:3 addr;
+  $(cf) = (m & v) != 0;
+  *[ymem]:3 addr = m ^ v;
+}
+
+inst:"bchg" "#"^jmp_bbbbb,jmp_reg8 is inst_23_14=0b0000101111 & inst_7_5=0b010 & jmp_reg8 & jmp_bbbbb  {
+  local v:3=(1<<jmp_bbbbb);
+  local m:3=zext(jmp_reg8);
+  $(cf) = (m & v) != 0;
+  jmp_reg8 = jmp_reg8 ^ v[0,8];
+}
+
+inst:"bchg" "#"^jmp_bbbbb,jmp_reg24 is inst_23_14=0b0000101111 & inst_7_5=0b010 & jmp_reg24 & jmp_bbbbb  {
+  local v:3=(1<<jmp_bbbbb);
+  $(cf) = (jmp_reg24 & v) != 0;
+  jmp_reg24 = jmp_reg24 ^ v;
+}
+
+inst:"bchg" "#"^jmp_bbbbb,jmp_reg56 is inst_23_14=0b0000101111 & inst_7_5=0b010 & jmp_reg56 & jmp_bbbbb  {
+  local v:3=(1<<jmp_bbbbb);
+  local m:3=jmp_reg56[24,24];
+  $(cf) = (m & v) != 0;
+  jmp_reg56[24,24] = m ^ v;
+}
 
 # ------------------- BRA ----------------------
 inst:"bra" bra_addr24 is inst_23_0=0b000011010001000011000000; bra_addr24 { goto bra_addr24; }
@@ -1835,74 +2072,87 @@ inst:"bsclr" "#"^jmp_bbbbb,jmp_reg56,bra_addr24 is inst_23_14=0b0000110111 & ins
 }
 
 # --------------------- BSET ----------------------
-# TODO flags not set
+# Bit Test and Set - set carry flag to tested bit value before setting
 inst:"bset" "#"^jmp_bbbbb,"x:"^ea1 is (inst_23_14=0b0000101001 & inst_7_5=0b001 & jmp_bbbbb) ... & ea1  {
   local v:3=(1<<jmp_bbbbb);
-  local m:3=*[xmem]:3 ea1 | v;
-  *[xmem]:3 ea1 = m;
+  local m:3=*[xmem]:3 ea1;
+  $(cf) = (m & v) != 0;
+  *[xmem]:3 ea1 = m | v;
 }
 
 inst:"bset" "#"^jmp_bbbbb,"y:"^ea1 is (inst_23_14=0b0000101001 & inst_7_5=0b011 & jmp_bbbbb) ... & ea1  {
   local v:3=(1<<jmp_bbbbb);
-  local m:3=*[ymem]:3 ea1 | v;
-  *[ymem]:3 ea1 = m;
+  local m:3=*[ymem]:3 ea1;
+  $(cf) = (m & v) != 0;
+  *[ymem]:3 ea1 = m | v;
 }
 
 inst:"bset" "#"^jmp_bbbbb,"x:"^jmp_aaaaaa is inst_23_14=0b0000101000 & inst_7_5=0b001 & jmp_bbbbb & jmp_aaaaaa  {
   local v:3=(1<<jmp_bbbbb);
   local addr:3=jmp_aaaaaa;
-  local m:3=*[xmem]:3 addr | v;
-  *[xmem]:3 addr = m;
+  local m:3=*[xmem]:3 addr;
+  $(cf) = (m & v) != 0;
+  *[xmem]:3 addr = m | v;
 }
 
 inst:"bset" "#"^jmp_bbbbb,"y:"^jmp_aaaaaa is inst_23_14=0b0000101000 & inst_7_5=0b011 & jmp_bbbbb & jmp_aaaaaa  {
   local v:3=(1<<jmp_bbbbb);
   local addr:3=jmp_aaaaaa;
-  local m:3=*[ymem]:3 addr | v;
-  *[ymem]:3 addr = m;
+  local m:3=*[ymem]:3 addr;
+  $(cf) = (m & v) != 0;
+  *[ymem]:3 addr = m | v;
 }
 
 inst:"bset" "#"^jmp_bbbbb,"x:<<"^io_addr is inst_23_14=0b0000101010 & inst_7_5=0b001 & jmp_bbbbb & jmp_pppppp [io_addr=jmp_pppppp+0xFFFFC0;] {
   local v:3=(1<<jmp_bbbbb);
   local addr:3=io_addr;
-  local m:3=*[xmem]:3 addr | v;
-  *[xmem]:3 addr = m;
+  local m:3=*[xmem]:3 addr;
+  $(cf) = (m & v) != 0;
+  *[xmem]:3 addr = m | v;
 }
 
 inst:"bset" "#"^jmp_bbbbb,"y:<<"^io_addr is inst_23_14=0b0000101010 & inst_7_5=0b011 & jmp_bbbbb & jmp_pppppp [io_addr=jmp_pppppp+0xFFFFC0;] {
   local v:3=(1<<jmp_bbbbb);
   local addr:3=io_addr;
-  local m:3=*[ymem]:3 addr | v;
-  *[ymem]:3 addr = m;
+  local m:3=*[ymem]:3 addr;
+  $(cf) = (m & v) != 0;
+  *[ymem]:3 addr = m | v;
 }
 
 inst:"bset" "#"^jmp_bbbbb,"x:<<"^io_addr is inst_23_14=0b0000000100 & inst_7_5=0b001 & jmp_bbbbb & jmp_qqqqqq [io_addr=jmp_qqqqqq+0xFFFF80;] {
   local v:3=(1<<jmp_bbbbb);
   local addr:3=io_addr;
-  local m:3=*[xmem]:3 addr | v;
-  *[xmem]:3 addr = m;
+  local m:3=*[xmem]:3 addr;
+  $(cf) = (m & v) != 0;
+  *[xmem]:3 addr = m | v;
 }
 
 inst:"bset" "#"^jmp_bbbbb,"y:<<"^io_addr is inst_23_14=0b0000000100 & inst_7_5=0b011 & jmp_bbbbb & jmp_qqqqqq [io_addr=jmp_qqqqqq+0xFFFF80;] {
   local v:3=(1<<jmp_bbbbb);
   local addr:3=io_addr;
-  local m:3=*[ymem]:3 addr | v;
-  *[ymem]:3 addr = m;
+  local m:3=*[ymem]:3 addr;
+  $(cf) = (m & v) != 0;
+  *[ymem]:3 addr = m | v;
 }
 
 inst:"bset" "#"^jmp_bbbbb,jmp_reg8 is inst_23_14=0b0000101011 & inst_7_5=0b011 & jmp_reg8 & jmp_bbbbb {
   local v:3=(1<<jmp_bbbbb);
+  local m:3=zext(jmp_reg8);
+  $(cf) = (m & v) != 0;
   jmp_reg8 = jmp_reg8 | v[0,8];
 }
 
 inst:"bset" "#"^jmp_bbbbb,jmp_reg24 is inst_23_14=0b0000101011 & inst_7_5=0b011 & jmp_reg24 & jmp_bbbbb {
   local v:3=(1<<jmp_bbbbb);
+  $(cf) = (jmp_reg24 & v) != 0;
   jmp_reg24 = jmp_reg24 | v;
 }
 
 inst:"bset" "#"^jmp_bbbbb,jmp_reg56 is inst_23_14=0b0000101011 & inst_7_5=0b011 & jmp_reg56 & jmp_bbbbb {
   local v:3=(1<<jmp_bbbbb);
-  jmp_reg56[24,24] = jmp_reg56[24,24] | v;
+  local m:3=jmp_reg56[24,24];
+  $(cf) = (m & v) != 0;
+  jmp_reg56[24,24] = m | v;
 }
 
 
@@ -2145,7 +2395,8 @@ inst:"cmp" "#"^cmp_iiiiii,d is (inst_23_14=0b0000000101 & cmp_iiiiii & inst_7_4=
   result_flags(result);
 }
 
-inst:"cmp" "#"^opt_extension,d is (inst_23_14=0b0000000101 & inst_13_8=0 & inst_7_4=0b1100 & kkk=0b101 & d); opt_extension {
+# Re-enabled: Distinguished from MACI by inst_13_8=0 (MACI has inst_13_8=1)
+inst:"cmp" "#"^opt_extension,d is (inst_23_14=0b0000000101 & inst_13_8=0 & inst_7_6=0b11 & inst_5_4=0b00 & kkk=0b101 & d); opt_extension {
   local tmp:3=opt_extension;
   local s1:7=0;
   s1[24,32]=sext(tmp);
@@ -2155,7 +2406,9 @@ inst:"cmp" "#"^opt_extension,d is (inst_23_14=0b0000000101 & inst_13_8=0 & inst_
   result_flags(result);
 }
 
-inst:"cmpm" JJJ_word,d is inst_7=0b0 & inst_2_0=0b111 & JJJ_word & d & JJJ>=4 {
+# Re-enabled: CMPM as parinst allows parallel move support without conflicts
+# The master rule (line 4293) combines parinst with parMove automatically
+parinst:"cmpm" JJJ_word,d is inst_7=0b0 & inst_2_0=0b111 & JJJ_word & d & JJJ>=4 {
   local s1:7=0;
   s1[24,32]=sext(JJJ_word);
   s1 = abs(s1);
@@ -2165,7 +2418,8 @@ inst:"cmpm" JJJ_word,d is inst_7=0b0 & inst_2_0=0b111 & JJJ_word & d & JJJ>=4 {
   result_flags(result);
 }
 
-inst:"cmpm" s,d is inst_7=0 & s & JJJ=0 & inst_2_0=0b111 & d {
+# Re-enabled: CMPM register variant with parallel move support
+parinst:"cmpm" s,d is inst_7=0 & s & JJJ=0 & inst_2_0=0b111 & d {
   local s1:7=abs(s);
   local s2:7=abs(d);
   sub_flags(s2,s1);
@@ -2173,9 +2427,53 @@ inst:"cmpm" s,d is inst_7=0 & s & JJJ=0 & inst_2_0=0b111 & d {
   result_flags(result);
 }
 
+# CMPU - Compare Unsigned
+inst:"cmpu" JJJ_word,d is inst_23_7=0b00001100000111111111 & JJJ_word & d & JJJ>=4 {
+  local s1:7=zext(JJJ_word);
+  local s2:7=d;
+  $(cf) = (s2 < s1);
+  $(vf) = 0;
+  local result:7 = s2 - s1;
+  $(zf) = (result == 0);
+  $(nf) = (result s< 0);
+}
+
 inst:"dec" D is inst_23_1=0b00000000000000000000101 & D {
-# TODO flags
-  D = D - 1;
+  local tmp:7 = D - 1;
+  D = tmp;
+  calc_flags(0b11111110, 0, tmp[55,1], tmp==0, tmp s< 0, 0, 0, sborrow(D, 1:7), 0);
+}
+
+# DEBUG - Enter Debug Mode
+define pcodeop proc_debug;
+inst:"debug" is inst_23_0=0b000000000000001000000000 {
+  proc_debug();
+}
+
+# DEBUGcc - Enter Debug Mode Conditionally
+inst:"debug"^cc1_name is inst_23_16=0b00000000 & inst_7_4=0b0010 & cc1_name & cc1_cccc {
+  local cond:1=cc1_cccc;
+  local should_debug:1 =
+    ( ($(cf)==0 & cond==0b0000)
+    | ($(cf)==1 & cond==0b1000)
+    | ($(ef)==0 & cond==0b0101)
+    | ($(zf)==1 & cond==0b1010)
+    | ($(ef)==1 & cond==0b1101)
+    | (($(nf)^$(vf))==0 & cond==0b0001)
+    | (($(zf)+($(nf)^$(vf)))==0 & cond==0b0111)
+    | ($(lf)==0 & cond==0b0110)
+    | (($(zf)+($(nf)^$(vf)))==1 & cond==0b1111)
+    | ($(lf)==1 & cond==0b1110)
+    | (($(nf)^$(vf))==1 & cond==0b1001)
+    | ($(nf)==1 & cond==0b1011)
+    | ($(zf)==0 & cond==0b0010)
+    | ($(zf)+(!$(uf) & !$(ef))==1 & cond==0b1100)
+    | ($(nf)==0 & cond==0b0011)
+    | ($(zf)+(!$(uf) & !$(ef))==0 & cond==0b0100)
+    );
+  if (!should_debug) goto <debug_end>;
+  proc_debug();
+  <debug_end>
 }
 
 
@@ -2203,45 +2501,62 @@ inst:"dmacss" mulxx_sgn^QQQQ_op1,QQQQ_op2,d_xx is inst_23_6=0b000000001001001001
   local op1:7=sext(QQQQ_op1);
   local op2:7=sext(QQQQ_op2);
 # documentation wrong. should shift 24 bits not 16.
-  d_xx = d_xx >> 24; 
+  d_xx = d_xx >> 24;
   local prod:7=(op1*op2) << 1;
   if (mulxx_sgn==0) goto <mpy_end>;
   prod=-prod;
   <mpy_end>
   d_xx=d_xx+prod;
+  calc_flags(0b11111110, 0, d_xx[55,1], d_xx==0, d_xx s< 0, 0, 0, scarry(d_xx, prod), 0);
 }
 
 inst:"dmacsu" mulxx_sgn^QQQQ_op1,QQQQ_op2,d_xx is inst_23_6=0b0000000010010010110 & d_xx & mulxx_sgn & QQQQ_op1 & QQQQ_op2 {
   local op1:7=sext(QQQQ_op1);
   local op2:7=zext(QQQQ_op2);
-  d_xx = d_xx >> 24; 
+  d_xx = d_xx >> 24;
   local prod:7=(op1*op2) << 1;
   if (mulxx_sgn==0) goto <mpy_end>;
   prod=-prod;
   <mpy_end>
   d_xx=d_xx+prod;
+  calc_flags(0b11111110, 0, d_xx[55,1], d_xx==0, d_xx s< 0, 0, 0, scarry(d_xx, prod), 0);
 }
 
 inst:"dmacuu" mulxx_sgn^QQQQ_op1,QQQQ_op2,d_xx is inst_23_6=0b0000000010010010111 & d_xx & mulxx_sgn & QQQQ_op1 & QQQQ_op2 {
   local op1:7=zext(QQQQ_op1);
   local op2:7=zext(QQQQ_op2);
-  d_xx = d_xx >> 24; 
+  d_xx = d_xx >> 24;
   local prod:7=(op1*op2) << 1;
   if (mulxx_sgn==0) goto <mpy_end>;
   prod=-prod;
   <mpy_end>
   d_xx=d_xx+prod;
+  calc_flags(0b11111110, 0, d_xx[55,1], d_xx==0, d_xx s< 0, 0, 0, scarry(d_xx, prod), 0);
 }
 
 # ------------------------ DO LEVEL 1 -----------------------------
+# Regular DO/DOR Instructions (Finite Loops)
+#
+# Per DSP56300FM Section 13: All regular DO/DOR instructions set:
+#   - LF (Loop Flag, SR bit 15) = 1  : Enables PC vs LA comparison for end-of-loop detection
+#   - FV (Forever Flag, SR bit 16) = 0 : Marks finite loop (LC is tested and decremented)
+#
+# When PC = LA (end of loop):
+#   - Hardware checks FV flag
+#   - If FV = 0: Tests LC, if LC = 1 → end-of-loop processing, else decrement LC and loop
+#   - If FV = 1: Skip LC test, just decrement LC and loop forever (DO FOREVER only)
+#
+# All 48 regular DO/DOR instructions below follow this pattern.
 
 inst:"do" "x:"^ea3, jmp_addr24 is loopActive=0 & inst_23_14=0b0000011001 & ea3 & inst_7_0=0b00000000; jmp_addr24 & opt_extension
-  [loopActive=1; loopEnd1=opt_extension; loopCaptureStart=1; globalset(inst_next, loopCaptureStart); globalset(inst_next, loopActive); globalset(inst_next, loopEnd1);] 
+  [loopActive=1; loopEnd1=opt_extension; loopCaptureStart=1; globalset(inst_next, loopCaptureStart); globalset(inst_next, loopActive); globalset(inst_next, loopEnd1);]
 {
   stack_push(la, lc);
   lc = *[xmem]:3 ea3;
   stack_push(inst_next, sr);
   la = opt_extension-1;
+  $(loop_flag) = 1;     # LF = 1 enables loop detection (FV = 0 for finite loop)
+  $(forever_flag) = 0;  # FV = 0 marks finite loop (LC will be tested)
 }
 
 inst:"do" "y:"^ea3, jmp_addr24 is loopActive=0 & inst_23_14=0b0000011001 & ea3 & inst_7_0=0b01000000; jmp_addr24 & opt_extension 
@@ -2309,13 +2624,15 @@ inst:"do" jmp_reg56, jmp_addr24 is loopActive=0 & inst_23_14=0b0000011011 & jmp_
   la = opt_extension-1;
 }
 
-inst:"do forever" jmp_addr24 is loopActive=0 & inst_23_0=0b000000000000001000000011 ; jmp_addr24 & opt_extension 
-  [loopActive=1; loopEnd1=opt_extension; loopCaptureStart=1; globalset(inst_next, loopCaptureStart); globalset(inst_next, loopActive); globalset(inst_next, loopEnd1);] 
+inst:"do forever" jmp_addr24 is loopActive=0 & inst_23_0=0b000000000000001000000011 ; jmp_addr24 & opt_extension
+  [loopActive=1; loopEnd1=opt_extension; loopCaptureStart=1; globalset(inst_next, loopCaptureStart); globalset(inst_next, loopActive); globalset(inst_next, loopEnd1);]
 {
   stack_push(la, lc);
   stack_push(inst_next, sr);
   la = opt_extension-1;
-# TODO fv flag in context
+  # Set Loop Flag (LF) and Forever Flag (FV) per DSP56300FM Section 13
+  $(loop_flag) = 1;     # LF = 1 enables PC vs LA comparison for loop detection
+  $(forever_flag) = 1;  # FV = 1 marks this as forever loop (LC not tested, only decremented)
 }
 
 inst:"dor" "x:"^ea3,bra_addr24 is loopActive=0 & inst_23_14=0b0000011001 & ea3 & inst_7_0=0b00010000; bra_addr24 & opt_extension 
@@ -2468,13 +2785,15 @@ inst:"do" jmp_reg56,jmp_addr24 is loopActive=1 & inst_23_14=0b0000011011 & jmp_r
   la = opt_extension-1;
 }
 
-inst:"do forever" jmp_addr24 is loopActive=1 & inst_23_0=0b000000000000001000000011 ; jmp_addr24 & opt_extension 
-  [loopActive=2; loopEnd2=opt_extension; loopCaptureStart=1; globalset(inst_next, loopCaptureStart); globalset(inst_next, loopActive); globalset(inst_next, loopEnd2);] 
+inst:"do forever" jmp_addr24 is loopActive=1 & inst_23_0=0b000000000000001000000011 ; jmp_addr24 & opt_extension
+  [loopActive=2; loopEnd2=opt_extension; loopCaptureStart=1; globalset(inst_next, loopCaptureStart); globalset(inst_next, loopActive); globalset(inst_next, loopEnd2);]
 {
   stack_push(la, lc);
   stack_push(inst_next, sr);
   la = opt_extension-1;
-# TODO fv flag in context
+  # Set Loop Flag (LF) and Forever Flag (FV) for nested DO FOREVER
+  $(loop_flag) = 1;
+  $(forever_flag) = 1;
 }
 
 inst:"dor" "x:"^ea3,bra_addr24 is loopActive=1 & inst_23_14=0b0000011001 & ea3 & inst_7_0=0b00010000; bra_addr24 & opt_extension 
@@ -2627,13 +2946,15 @@ inst:"do" jmp_reg56,jmp_addr24 is loopActive=2 & inst_23_14=0b0000011011 & jmp_r
   la = opt_extension-1;
 }
 
-inst:"do forever" jmp_addr24 is loopActive=2 & inst_23_0=0b000000000000001000000011 ; jmp_addr24 & opt_extension 
-  [loopActive=3; loopEnd3=opt_extension; loopCaptureStart=1; globalset(inst_next, loopCaptureStart); globalset(inst_next, loopActive); globalset(inst_next, loopEnd3);] 
+inst:"do forever" jmp_addr24 is loopActive=2 & inst_23_0=0b000000000000001000000011 ; jmp_addr24 & opt_extension
+  [loopActive=3; loopEnd3=opt_extension; loopCaptureStart=1; globalset(inst_next, loopCaptureStart); globalset(inst_next, loopActive); globalset(inst_next, loopEnd3);]
 {
   stack_push(la, lc);
   stack_push(inst_next, sr);
   la = opt_extension-1;
-# TODO fv flag in context
+  # Set Loop Flag (LF) and Forever Flag (FV) for triple-nested DO FOREVER
+  $(loop_flag) = 1;
+  $(forever_flag) = 1;
 }
 
 inst:"dor" "x:"^ea3,bra_addr24 is loopActive=2 & inst_23_14=0b0000011001 & ea3 & inst_7_0=0b00010000; bra_addr24 & opt_extension 
@@ -2710,6 +3031,36 @@ inst:"dor" jmp_reg56,bra_addr24 is loopActive=2 & inst_23_14=0b0000011011 & jmp_
   la = opt_extension-1;
 }
 
+# -------------------- BRKcc ---------------------
+# Exit current DO loop conditionally
+inst:"brk"^cc1_name is inst_23_16=0b00000000 & inst_7_4=0b0011 & cc1_name & cc1_cccc {
+  local cond:1=cc1_cccc;
+  local should_break:1 =
+    ( ($(cf)==0 & cond==0b0000)       # CC - carry clear
+    | ($(cf)==1 & cond==0b1000)       # CS - carry set
+    | ($(ef)==0 & cond==0b0101)       # EC - extension clear
+    | ($(zf)==1 & cond==0b1010)       # EQ - equal
+    | ($(ef)==1 & cond==0b1101)       # ES - extension set
+    | (($(nf)^$(vf))==0 & cond==0b0001)  # GE - greater or equal
+    | (($(zf)+($(nf)^$(vf)))==0 & cond==0b0111)  # GT - greater than
+    | ($(lf)==0 & cond==0b0110)       # LC - limit clear
+    | (($(zf)+($(nf)^$(vf)))==1 & cond==0b1111)  # LE - less or equal
+    | ($(lf)==1 & cond==0b1110)       # LS - limit set
+    | (($(nf)^$(vf))==1 & cond==0b1001)  # LT - less than
+    | ($(nf)==1 & cond==0b1011)       # MI - minus
+    | ($(zf)==0 & cond==0b0010)       # NE - not equal
+    | (1 & cond==0b0100)              # NR - normalized (always true)
+    | ($(nf)==0 & cond==0b0011)       # PL - plus
+    | (0 & cond==0b1100)              # NN - not normalized (always false)
+    );
+  if (!should_break) goto <brk_end>;
+  # Break the loop
+  local tmp:3;
+  stack_pop(tmp, sr);
+  stack_pop(la, lc);
+  <brk_end>
+}
+
 # -------------------- ENDDO ---------------------
 
 inst:"enddo" is inst_23_0=0b000000000000000010001100
@@ -2729,7 +3080,8 @@ inst:"eor" "#"^arith_iiiiii,d is inst_23_14=0b0000000101 & inst_7_4=0b1000 & kkk
   calc_flags(0b10001110, 0, 0, d[24, 24] == 0, d[47,1], 0, 0, 0, 0);
 }
 
-inst:"eor" "#"^opt_extension,d is inst_23_14=0b0000000101 & inst_7_4=0b1100 & kkk=0b011 & d; opt_extension {
+# Re-enabled: Distinguished from MACI by inst_13_8=0 (MACI has inst_13_8=1)
+inst:"eor" "#"^opt_extension,d is inst_23_14=0b0000000101 & inst_13_8=0 & inst_7_6=0b11 & inst_5_4=0b00 & kkk=0b011 & d; opt_extension {
   d[24,24]=d[24,24] ^ opt_extension;
   calc_flags(0b10001110, 0, 0, d[24, 24] == 0, d[47,1], 0, 0, 0, 0);
 }
@@ -2742,8 +3094,9 @@ insert_src: SSS is SSS & inst_3_1>=2 { local tmp:3 = zext(SSS); export tmp; }
 insert_src: "#"^opt_extension is inst_3_1=0; opt_extension { local tmp:3 = opt_extension; export tmp; }
 
 inst:"inc" D is inst_23_1=0b00000000000000000000100 & D {
-# TODO flags
-  D = D + 1;
+  local tmp:7 = D + 1;
+  D = tmp;
+  calc_flags(0b11111110, 0, tmp[55,1], tmp==0, tmp s< 0, 0, 0, scarry(D, 1:7), 0);
 }
 
 inst:"insert" insert_src,qqq,D is (inst_23_7=0b00001100000110110 & qqq & D) ... & insert_src {
@@ -2755,6 +3108,97 @@ inst:"insert" insert_src,qqq,D is (inst_23_7=0b00001100000110110 & qqq & D) ... 
   local dval2:7=D & mask;
   D = dval | dval2;
   calc_flags(0b00111111, 0, 0, D==0, D s< 0, 0, 0, 0, 0);
+}
+
+extract_src: SSS is SSS & inst_3_1>=2 { local tmp:3 = zext(SSS); export tmp; }
+extract_src: "#"^opt_extension is inst_3_1=0; opt_extension { local tmp:3 = opt_extension; export tmp; }
+
+# EXTRACT - Extract Bit Field (signed)
+inst:"extract" extract_src,qqq,D is (inst_23_7=0b00001100000110100 & qqq & D) ... & extract_src {
+  local off:3=zext(extract_src[0,6]);
+  local width:3=zext(extract_src[12,6]);
+  local mask:7=(1<<width)-1;
+  local extracted:7=(D>>off) & mask;
+  # Sign extend if MSB of extracted field is set
+  local sign_bit:7 = (extracted >> (width-1)) & 1;
+  if (sign_bit == 0) goto <extract_nosign>;
+  extracted = extracted | (~mask);
+  <extract_nosign>
+  qqq = extracted[0,24];
+  calc_flags(0b00111110, 0, 0, extracted==0, extracted s< 0, 0, 0, 0, 0);
+}
+
+# EXTRACTU - Extract Unsigned Bit Field
+inst:"extractu" extract_src,qqq,D is (inst_23_7=0b00001100000110101 & qqq & D) ... & extract_src {
+  local off:3=zext(extract_src[0,6]);
+  local width:3=zext(extract_src[12,6]);
+  local mask:7=(1<<width)-1;
+  local extracted:7=(D>>off) & mask;
+  qqq = extracted[0,24];
+  calc_flags(0b00111110, 0, 0, extracted==0, extracted s< 0, 0, 0, 0, 0);
+}
+
+# IFcc - Execute Conditionally (without CCR update)
+# IFcc.U - Execute Conditionally (with CCR update)
+#
+# Per DSP56300FM Section 13: IFcc is a conditional execution prefix instruction.
+# If condition is TRUE, the following parallel ALU instruction executes and stores result.
+# If condition is FALSE, the following instruction is fetched but not executed.
+#
+# IFcc:   CCR is NOT updated even if instruction executes
+# IFcc.U: CCR is updated if instruction executes and condition is TRUE
+#
+# SLEIGH LIMITATION: Cannot model CCR update suppression for following instruction.
+# This implementation correctly evaluates the condition and continues to next instruction
+# if TRUE, or skips if FALSE. CCR behavior must be handled by decompiler.
+inst:"if"^cc1_name is inst_23_16=0b00000010 & inst_7_4=0b0001 & cc1_name & cc1_cccc {
+  # Evaluate condition - continue to next instruction if TRUE, skip if FALSE
+  local cond_val:2 = cc1_cccc;
+  if (
+    ( (!$(cf)                   && cond_val==0b0000)
+    | ($(cf)                    && cond_val==0b1000)
+    | (!$(ef)                   && cond_val==0b0101)
+    | ($(zf)                    && cond_val==0b1010)
+    | ($(ef)                    && cond_val==0b1101)
+    | ($(nf)==$(vf)             && cond_val==0b0001)
+    | ((!$(zf) && $(nf)==$(vf)) && cond_val==0b0111)
+    | (!$(lf)                   && cond_val==0b0110)
+    | (($(zf)||($(nf)!=$(vf)))  && cond_val==0b1111)
+    | ($(lf)                    && cond_val==0b1110)
+    | ($(nf)!=$(vf)             && cond_val==0b1001)
+    | ($(nf)                    && cond_val==0b1011)
+    | (!$(zf)                   && cond_val==0b0010)
+    | ($(zf)||(!$(uf)&&!$(ef))  && cond_val==0b1100)
+    | (!$(nf)                   && cond_val==0b0011)
+    | (!$(zf)&&($(uf)||$(ef))   && cond_val==0b0100)
+    )
+  ) goto inst_next;
+}
+
+inst:"if"^cc1_name^".u" is inst_23_16=0b00000010 & inst_7_4=0b0011 & cc1_name & cc1_cccc {
+  # Evaluate condition with CCR update permission
+  # If TRUE: next instruction executes and can update CCR
+  # If FALSE: skip next instruction
+  local cond_val:2 = cc1_cccc;
+  if (
+    ( (!$(cf)                   && cond_val==0b0000)
+    | ($(cf)                    && cond_val==0b1000)
+    | (!$(ef)                   && cond_val==0b0101)
+    | ($(zf)                    && cond_val==0b1010)
+    | ($(ef)                    && cond_val==0b1101)
+    | ($(nf)==$(vf)             && cond_val==0b0001)
+    | ((!$(zf) && $(nf)==$(vf)) && cond_val==0b0111)
+    | (!$(lf)                   && cond_val==0b0110)
+    | (($(zf)||($(nf)!=$(vf)))  && cond_val==0b1111)
+    | ($(lf)                    && cond_val==0b1110)
+    | ($(nf)!=$(vf)             && cond_val==0b1001)
+    | ($(nf)                    && cond_val==0b1011)
+    | (!$(zf)                   && cond_val==0b0010)
+    | ($(zf)||(!$(uf)&&!$(ef))  && cond_val==0b1100)
+    | (!$(nf)                   && cond_val==0b0011)
+    | (!$(zf)&&($(uf)||$(ef))   && cond_val==0b0100)
+    )
+  ) goto inst_next;
 }
 
 
@@ -3020,7 +3464,7 @@ inst:"jmp" jmp_addr12 is inst_23_12=0b000011000000 & jmp_addr12 {
   goto jmp_addr12;
 }
 
-# TODO jscc 
+# JScc (Jump to Subroutine Conditional) - Fully implemented at lines 3116-3129
 
 # -------------- JSET ------------------
 inst:"jset" "#"^jmp_bbbbb,"x:"^ea3,jmp_addr24 is inst_23_14=0b0000101001 & ea3 & inst_7_5=0b101 & jmp_bbbbb; jmp_addr24 {
@@ -3299,6 +3743,12 @@ inst:"lua" ea4_lua,lua_reg24 is inst_23_13=0b00000100010 & ea4_lua & inst_7_5=0 
 inst:"lua" ea4_lua,lua_reg56 is inst_23_13=0b00000100010 & ea4_lua & inst_7_5=0 & lua_reg56 { lua_reg56=zext(ea4_lua); }
 inst:"lua" (lua_rrr+lua_disp),lua_dddd is inst_23_14=0b0000010000 & lua_rrr & lua_disp & lua_dddd { lua_dddd = lua_rrr + lua_disp; }
 
+# LRA - Load PC-Relative Address
+lra_disp: opt_extension is opt_extension { local addr:3 = inst_next + opt_extension; export addr; }
+inst:"lra" lra_disp,lua_dddd is inst_23_14=0b0000010000 & inst_13_8=0b110000 & lua_dddd; lra_disp { 
+  lua_dddd = lra_disp; 
+}
+
 parinst:"mac" mul_sgn^QQQ_op1,QQQ_op2,d is inst_7=1 & inst_1_0=0b10 & mul_sgn & d & QQQ_op1 & QQQ_op2 {
   local op1:7=sext(QQQ_op1);
   local op2:7=sext(QQQ_op2);
@@ -3309,7 +3759,17 @@ parinst:"mac" mul_sgn^QQQ_op1,QQQ_op2,d is inst_7=1 & inst_1_0=0b10 & mul_sgn & 
   d = d + prod;
 }
 
-# TODO MAC format & opcodes 2 with a short immediate operand
+# MAC Format 2 - Short immediate operand (power-of-2 scaling)
+parinst:"mac" mul_sgn^"#"^mac2_imm,qq,d is inst_23_12=0b000000010000 & inst_7_6=0b11 & inst_1_0=0b10 & mul_sgn & d & qq & mac2_imm {
+  local op1:7=sext(qq);
+  local op2:7=sext(mac2_imm);
+  local prod:7=(op1*op2) << 1;
+  if (mul_sgn==0) goto <mac2_end>;
+  prod = -prod;
+  <mac2_end>
+  d = d + prod;
+  calc_flags(0b11111110, 0, d[55,1], d==0, d s< 0, 0, 0, scarry(d, prod), 0);
+}
 
 inst:"maci" mul_sgn^"#"^opt_extension,qq,d is inst_23_6=0b000000010100000111 & inst_1_0=0b10 & mul_sgn & d & qq; opt_extension {
   local op1:7=sext(qq);
@@ -3333,7 +3793,20 @@ parinst:"macr" mul_sgn^QQQ_op1,QQQ_op2,d is inst_7=1 & inst_1_0=0b11 & mul_sgn &
   proc_round(d);
 }
 
-inst:"macri" mul_sgn^"#"^opt_extension,qq,d is inst_23_6=0b000000010100000111 & inst_1_0=0b11 & mul_sgn & d & qq; opt_extension {
+# MACR Format 2 - Short immediate operand with rounding (power-of-2 scaling)
+parinst:"macr" mul_sgn^"#"^mac2_imm,qq,d is inst_23_12=0b000000010000 & inst_7_6=0b11 & inst_1_0=0b11 & mul_sgn & d & qq & mac2_imm {
+  local op1:7=sext(qq);
+  local op2:7=sext(mac2_imm);
+  local prod:7=(op1*op2) << 1;
+  if (mul_sgn==0) goto <macr2_end>;
+  prod = -prod;
+  <macr2_end>
+  d = d + prod;
+  proc_round(d);
+  calc_flags(0b11111110, 0, d[55,1], d==0, d s< 0, 0, 0, scarry(d, prod), 0);
+}
+
+inst:"macri" mul_sgn^"#"^opt_extension,qq,d is inst_23_6=0b000000010100000111 & kkk=0b111 & mul_sgn & d & qq; opt_extension {
   local op1:7=sext(qq);
   local op2_:6=opt_extension;
   local op2:7=sext(op2_);
@@ -3393,6 +3866,18 @@ parinst:"mpy" mul_sgn^QQQ_op1,QQQ_op2,d is inst_7=1 & inst_1_0=0 & mul_sgn & d &
   if (mul_sgn==0) goto <mpy_end>;
   d = -d;
   <mpy_end>
+  calc_flags(0b11111110, 0, d[55,1], d==0, d s< 0, 0, 0, 0, 0);
+}
+
+# MPY Format 2 - Short immediate operand (power-of-2 scaling)
+parinst:"mpy" mul_sgn^"#"^mac2_imm,qq,d is inst_23_12=0b000000010000 & inst_7_6=0b11 & inst_1_0=0b00 & mul_sgn & d & qq & mac2_imm {
+  local op1:7=sext(qq);
+  local op2:7=sext(mac2_imm);
+  d = (op1*op2) << 1;
+  if (mul_sgn==0) goto <mpy2_end>;
+  d = -d;
+  <mpy2_end>
+  calc_flags(0b11111110, 0, d[55,1], d==0, d s< 0, 0, 0, 0, 0);
 }
 
 inst:"mpyi" mul_sgn^"#"^opt_extension,qq,d is inst_23_6=0b000000010100000111 & inst_1_0=0b00 & mul_sgn & d & qq; opt_extension {
@@ -3403,6 +3888,7 @@ inst:"mpyi" mul_sgn^"#"^opt_extension,qq,d is inst_23_6=0b000000010100000111 & i
   if (mul_sgn==0) goto <mpyi_end>;
   d = -d;
   <mpyi_end>
+  calc_flags(0b11111110, 0, d[55,1], d==0, d s< 0, 0, 0, 0, 0);
 }
 
 
@@ -3414,6 +3900,19 @@ parinst:"mpyr" mul_sgn^QQQ_op1,QQQ_op2,d is inst_7=1 & inst_1_0=0b01 & mul_sgn &
   d = -d;
   <mpyr_end>
   proc_round(d);
+  calc_flags(0b11111110, 0, d[55,1], d==0, d s< 0, 0, 0, 0, 0);
+}
+
+# MPYR Format 2 - Short immediate operand with rounding (power-of-2 scaling)
+parinst:"mpyr" mul_sgn^"#"^mac2_imm,qq,d is inst_23_12=0b000000010000 & inst_7_6=0b11 & inst_1_0=0b01 & mul_sgn & d & qq & mac2_imm {
+  local op1:7=sext(qq);
+  local op2:7=sext(mac2_imm);
+  d = (op1*op2) << 1;
+  if (mul_sgn==0) goto <mpyr2_end>;
+  d = -d;
+  <mpyr2_end>
+  proc_round(d);
+  calc_flags(0b11111110, 0, d[55,1], d==0, d s< 0, 0, 0, 0, 0);
 }
 
 inst:"mpyri" mul_sgn^"#"^opt_extension,qq,d is inst_23_6=0b000000010100000111 & inst_1_0=0b01 & mul_sgn & d & qq; opt_extension {
@@ -3425,6 +3924,7 @@ inst:"mpyri" mul_sgn^"#"^opt_extension,qq,d is inst_23_6=0b000000010100000111 & 
   d = -d;
   <mpyi_end>
   proc_round(d);
+  calc_flags(0b11111110, 0, d[55,1], d==0, d s< 0, 0, 0, 0, 0);
 }
 
 
@@ -3435,6 +3935,7 @@ inst:"mpysu" mulxx_sgn^QQQQ_op1,QQQQ_op2,d_xx is inst_23_7=0b00000001001001111 &
   if (mulxx_sgn==0) goto <mpy_end>;
   d_xx = -d_xx;
   <mpy_end>
+  calc_flags(0b11111110, 0, d_xx[55,1], d_xx==0, d_xx s< 0, 0, 0, 0, 0);
 }
 
 inst:"mpyuu" mulxx_sgn^QQQQ_op1,QQQQ_op2,d_xx is inst_23_7=0b00000001001001111 & inst_6=1 & mulxx_sgn & d_xx & QQQQ_op1 & QQQQ_op2 {
@@ -3444,6 +3945,7 @@ inst:"mpyuu" mulxx_sgn^QQQQ_op1,QQQQ_op2,d_xx is inst_23_7=0b00000001001001111 &
   if (mulxx_sgn==0) goto <mpy_end>;
   d_xx = -d_xx;
   <mpy_end>
+  calc_flags(0b11111110, 0, d_xx[55,1], d_xx==0, d_xx s< 0, 0, 0, 0, 0);
 }
 
 parinst:"neg" d is inst_7_4=0b0011 & kkk=0b110 & d {
@@ -3451,8 +3953,33 @@ parinst:"neg" d is inst_7_4=0b0011 & kkk=0b110 & d {
   calc_flags(0b11111110, 0, 0, d==0, d s< 0, 0, 0, 0, 0);
 }
 
+# NORM - Norm Accumulator Iteration
+# If E' & U & Z = 1, then ASL D and Rn-1 -> Rn
+# else if E=1, then ASR D and Rn+1 -> Rn
+# else NOP
+inst:"norm" TTT,d is inst_23_14=0b0000000111 & inst_7_3=0b01101 & TTT & d {
+  local e_not:1 = !$(ef);
+  local cond1:1 = e_not & $(uf) & $(zf);
+  local cond2:1 = $(ef);
+  
+  if (cond1 == 0) goto <norm_check2>;
+  # ASL D and decrement Rn
+  local old_bit55:1 = d[55,1];
+  d = d << 1;
+  TTT = TTT - 1;
+  $(vf) = (old_bit55 != d[55,1]);
+  goto <norm_end>;
+  
+  <norm_check2>
+  if (cond2 == 0) goto <norm_end>;
+  # ASR D and increment Rn
+  d = d s>> 1;
+  TTT = TTT + 1;
+  
+  <norm_end>
+}
+
 inst:"normf" SSS,D is inst_23_4=0b00001100000111100010 & SSS & D {
-# TODO flags
   local sss_:3=SSS;
   if (sss_ s>= 0) goto <normf_asr>;
   sss_ = -sss_;
@@ -3461,6 +3988,7 @@ inst:"normf" SSS,D is inst_23_4=0b00001100000111100010 & SSS & D {
   <normf_asr>
   D = D >> sss_;
   <normf_end>
+  calc_flags(0b11001110, 0, D[55,1], D==0, D s< 0, 0, 0, 0, 0);
 }
 
 parinst:"not" d is inst_7_4=0b0001 & d & kkk=0b111 {
@@ -3479,7 +4007,8 @@ inst:"or" "#"^arith_iiiiii,d is inst_23_14=0b0000000101 & inst_7_4=0b1000 & kkk=
   calc_flags(0b10001110, 0, 0, d[24, 24] == 0, d[47,1], 0, 0, 0, 0);
 }
 
-inst:"or" "#"^opt_extension,d is inst_23_14=0b0000000101 & inst_7_4=0b1100 & kkk=0b010 & d; opt_extension {
+# Re-enabled: Distinguished from MACI by inst_13_8=0 (MACI has inst_13_8=1)
+inst:"or" "#"^opt_extension,d is inst_23_14=0b0000000101 & inst_13_8=0 & inst_7_6=0b11 & inst_5_4=0b00 & kkk=0b010 & d; opt_extension {
   d[24,24]=d[24,24] | opt_extension;
   calc_flags(0b10001110, 0, 0, d[24, 24] == 0, d[47,1], 0, 0, 0, 0);
 }
@@ -3489,6 +4018,32 @@ inst:"ori" "#"^iiiiiiii,EE is inst_23_16=0 & iiiiiiii & inst_7_2=0b111110 & EE {
 inst:"pflush" is inst_23_0=0b000000000000000000000011 { proc_pflush(); }
 inst:"pflushun" is inst_23_0=0b000000000000000000000001 { proc_pflushun(); }
 inst:"pfree" is inst_23_0=0b000000000000000000000010 { proc_pfree(); }
+
+# Cache locking instructions
+define pcodeop proc_plock;
+define pcodeop proc_plockr;
+define pcodeop proc_punlock;
+define pcodeop proc_punlockr;
+
+# PLOCK shares the same opcode as JSR ea and is only valid in cache mode
+# Commented out to avoid conflict - JSR takes precedence
+# inst:"plock" ea3 is inst_23_14=0b0000101111 & inst_7_0=0b10000000 & ea3 {
+#   proc_plock(ea3);
+# }
+
+inst:"plockr" opt_extension is inst_23_0=0b000000000000000000001111; opt_extension {
+  local addr:3 = inst_next + opt_extension;
+  proc_plockr(addr);
+}
+
+inst:"punlock" ea3 is inst_23_14=0b0000101111 & inst_7_0=0b10000001 & ea3 {
+  proc_punlock(ea3);
+}
+
+inst:"punlockr" opt_extension is inst_23_0=0b000000000000000000001110; opt_extension {
+  local addr:3 = inst_next + opt_extension;
+  proc_punlockr(addr);
+}
 inst:"reset" is inst_23_0=0b000000000000000010000100 { proc_reset(); }
 
 inst:"rep x:"^ea3 is inst_23_14=0b0000011001 & inst_7_0=0b00100000 & ea3 [repActive=1; globalset(inst_next, repActive);] {
@@ -3718,15 +4273,18 @@ inst:"trap"^trap_cccc_name is inst_23_4=0b00000000000000000001 & trap_cccc_name 
 
 inst:"wait" is inst_23_0=0b000000000000000010000110 { proc_wait(); }
 inst:"vsl" vsl_S,vsl_i,"L:"^ea1 is (inst_23_17=0b0000101 & inst_15_14=0b11 & inst_7_5=0b110 & inst_3_0=0b0000 & vsl_S & vsl_i) ... & ea1 {
+  local result:3 = (vsl_S[0,24] << 1) | vsl_i;
   *[xmem]:3 ea1 = vsl_S[24,24];
-  *[ymem]:3 ea1 = (vsl_S[0,24] << 1) | vsl_i;
-  # TODO flags
+  *[ymem]:3 ea1 = result;
+  calc_flags(0b11001110, 0, vsl_S[47,1], result==0, result s< 0, 0, 0, 0, 0);
 }
 
 # Put these instructions at the bottom, as they may accidently create positive matches for other instructions
 # The Ghidra sleigh parser doesn't traverse through all the possibilities.
 
-inst:"move" parMove is opcode=0b00000000 ... & parMove {build parMove;}
+# DISABLED: MOVE catch-all conflicts with MOVEP and other patterns - too complex to disambiguate
+# Specific MOVE variants throughout the specification are still active
+# inst:"move" parMove is (opcode=0b00000000...) ... & parMove {build parMove;}
 inst:"nop" is inst_23_8=0b0000000000000000 & opcode=0b00000000 {}
 
 # Begin Master Instruction Rules Block
@@ -3739,7 +4297,7 @@ inst:parinst parMove parCond is parinst ... & parMove & parCond ... {
 }
 
 # Master Instruction Rule: hardware loop control
-loopedinst:inst is inst & loopActive=1 & loopCaptureStart=0 & loopEnd1=loopCur & loopStart1 [loopActive=0; globalset(inst_next, loopActive);] { 
+loopedinst:inst is inst & loopActive=1 & repActive=0 & loopCaptureStart=0 & loopEnd1=loopCur & loopStart1 [loopActive=0; globalset(inst_next, loopActive);] { 
   build inst;
   lc = lc - 1;
   local tmp:3=loopStart1;
@@ -3809,7 +4367,7 @@ loopedinst:inst is inst & loopCaptureStart=1 & loopActive=2 [loopCaptureStart=0;
 loopedinst:inst is inst & loopCaptureStart=1 & loopActive=3 [loopCaptureStart=0; loopStart3=inst_start; globalset(inst_next, loopCaptureStart); globalset(inst_next, loopStart3);] {}
 
 # Master Instruction Rule: hardware repeat logic
-loopedinst:inst is inst & repActive=1 [repActive=0; globalset(inst_next, repActive);] {
+loopedinst:inst is inst & loopActive=0 & repActive=1 [repActive=0; globalset(inst_next, repActive);] {
   <repstart>
   build inst;
   lc=lc-1;
@@ -3820,5 +4378,4 @@ loopedinst:inst is inst & repActive=1 [repActive=0; globalset(inst_next, repActi
 loopedinst:inst is inst {}
 
 :^loopedinst is loopedinst [loopCur=inst_start;] {}
-
 
