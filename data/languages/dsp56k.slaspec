@@ -1258,10 +1258,13 @@ jmp_ea24:opt_extension is ea1_mmmrrr=0b110000; opt_extension { export *[progmem]
 # the semantic is problematic, though.
 jmp_ea3:ea3 is ea3 { local tmp:3 = ea3; export tmp; }
 
-mulxx_sgn: is k_xx=0 & k_xx_ { local tmp:1=k_xx_; export tmp; }
+mulxx_sgn:"+" is k_xx=0 & k_xx_ { local tmp:1=k_xx_; export tmp; }
 mulxx_sgn:"-" is k_xx=1 & k_xx_ { local tmp:1=k_xx_; export tmp; }
 
-mul_sgn: is k=0 & k_ { local tmp:1=k_; export tmp; }
+# k bit: 0 = positive, 1 = negative (FM56000, MPY/MAC formats)
+# Explicitly emit the '+' for the positive form so the disassembler
+# cannot silently drift into the negative variant due to field aliasing.
+mul_sgn:"+" is k=0 & k_ { local tmp:1=k_; export tmp; }
 mul_sgn:"-" is k=1 & k_ { local tmp:1=k_; export tmp; }
 
 lua_reg8:lua_ddddd_byte is (lua_ddddd=10|lua_ddddd=11) & lua_ddddd_byte { export lua_ddddd_byte; }
