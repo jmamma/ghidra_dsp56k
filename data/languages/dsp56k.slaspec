@@ -3820,5 +3820,3 @@ loopedinst:inst is inst & repActive=1 [repActive=0; globalset(inst_next, repActi
 loopedinst:inst is inst {}
 
 :^loopedinst is loopedinst [loopCur=inst_start;] {}
-
-
