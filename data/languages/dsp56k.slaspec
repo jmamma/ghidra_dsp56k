@@ -2603,6 +2603,15 @@ inst:"do" "#"^do_imm12,jmp_addr24 is loopActive=2 & inst_23_16=0b00000110 & do_i
   la = opt_extension-1;
 }
 
+inst:"do" "#"^do_imm12,jmp_addr24 is loopActive=3 & inst_23_16=0b00000110 & do_imm12 & inst_7_4=0b1000; jmp_addr24 & opt_extension 
+  [loopActive=3; loopEnd3=opt_extension; loopCaptureStart=1; globalset(inst_next, loopCaptureStart); globalset(inst_next, loopActive); globalset(inst_next, loopEnd3);] 
+{
+  stack_push(la, lc);
+  lc = do_imm12;
+  stack_push(inst_next, sr);
+  la = opt_extension-1;
+}
+
 inst:"do" jmp_reg8,jmp_addr24 is loopActive=2 & inst_23_14=0b0000011011 & jmp_reg8 & inst_7_0=0b00000000; jmp_addr24 & opt_extension 
   [loopActive=3; loopEnd3=opt_extension; loopCaptureStart=1; globalset(inst_next, loopCaptureStart); globalset(inst_next, loopActive); globalset(inst_next, loopEnd3);] 
 {
